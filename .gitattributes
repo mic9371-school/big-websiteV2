@@ -1,0 +1,2 @@
+<file-pattern-1> !text !filter !merge !diff
+<file-pattern-2>... !text !filter !merge !diff
