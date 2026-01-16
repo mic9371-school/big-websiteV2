@@ -1,0 +1,74 @@
+name: Auto-track large files with Git LFS
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  autolfs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Install git-lfs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-lfs
+          git lfs install --local
+
+      - name: Auto-track files >= 100 MiB
+        env:
+          THRESHOLD_BYTES: 104857600  # 100 * 1024 * 1024
+        run: |
+          set -euo pipefail
+          threshold=${THRESHOLD_BYTES}
+          # Determine target branch name:
+          branch="${GITHUB_REF#refs/heads/}"
+          if [ -n "${GITHUB_HEAD_REF:-}" ]; then
+            branch="${GITHUB_HEAD_REF}"
+          fi
+          echo "Operating on branch: $branch"
+          changed=0
+
+          # Find tracked files and check sizes
+          git ls-files -z | while IFS= read -r -d '' f; do
+            [ -f "$f" ] || continue
+            # get file size in bytes
+            size=$(wc -c < "$f" || echo 0)
+            if [ "$size" -ge "$threshold" ]; then
+              echo "Auto-tracking large file: $f ($size bytes)"
+              git lfs track -- "$f" || true
+              changed=1
+            fi
+          done
+
+          if [ "$changed" -eq 1 ]; then
+            git add .gitattributes
+
+            # Re-add the large files so LFS pointers are written to the index
+            git ls-files -z | while IFS= read -r -d '' f; do
+              [ -f "$f" ] || continue
+              size=$(wc -c < "$f" || echo 0)
+              if [ "$size" -ge "$threshold" ]; then
+                git add -- "$f"
+              fi
+            done
+
+            # Commit and push back to the branch; skip CI to avoid loops
+            git commit -m "ci: auto-track large files with git-lfs [skip ci]" || echo "No changes to commit"
+            # Push back to the same branch
+            git push origin "HEAD:${branch}"
+            echo "Committed and pushed .gitattributes and LFS pointers"
+          else
+            echo "No files >= ${threshold} bytes found; nothing to do."
+          fi
