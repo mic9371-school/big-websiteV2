@@ -1,4 +1,4 @@
-name: Auto-track large files with Git LFS
+name: Fix LFS checkout & track large pointers
 
 on:
   push:
@@ -11,64 +11,107 @@ permissions:
   contents: write
 
 jobs:
-  autolfs:
+  fix-lfs:
     runs-on: ubuntu-latest
+    env:
+      THRESHOLD_BYTES: 104857600 # 100 MiB
     steps:
-      - name: Checkout
+      - name: Checkout (do not fetch LFS objects)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          lfs: true
+          lfs: false
 
-      - name: Install git-lfs
+      - name: Set up git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Install git-lfs (for git lfs track)
         run: |
           sudo apt-get update
           sudo apt-get install -y git-lfs
           git lfs install --local
 
-      - name: Auto-track files >= 100 MiB
-        env:
-          THRESHOLD_BYTES: 104857600  # 100 * 1024 * 1024
+      - name: Find LFS pointer files and their declared sizes
+        id: scan
         run: |
           set -euo pipefail
           threshold=${THRESHOLD_BYTES}
-          # Determine target branch name:
-          branch="${GITHUB_REF#refs/heads/}"
-          if [ -n "${GITHUB_HEAD_REF:-}" ]; then
-            branch="${GITHUB_HEAD_REF}"
-          fi
-          echo "Operating on branch: $branch"
-          changed=0
-
-          # Find tracked files and check sizes
-          git ls-files -z | while IFS= read -r -d '' f; do
-            [ -f "$f" ] || continue
-            # get file size in bytes
-            size=$(wc -c < "$f" || echo 0)
-            if [ "$size" -ge "$threshold" ]; then
-              echo "Auto-tracking large file: $f ($size bytes)"
-              git lfs track -- "$f" || true
-              changed=1
+          results=""
+          while IFS= read -r -d '' f; do
+            # Only consider tracked files that exist in the checkout
+            if [ ! -f "$f" ]; then
+              continue
             fi
-          done
-
-          if [ "$changed" -eq 1 ]; then
-            git add .gitattributes
-
-            # Re-add the large files so LFS pointers are written to the index
-            git ls-files -z | while IFS= read -r -d '' f; do
-              [ -f "$f" ] || continue
-              size=$(wc -c < "$f" || echo 0)
-              if [ "$size" -ge "$threshold" ]; then
-                git add -- "$f"
+            if grep -q "version https://git-lfs.github.com/spec/v1" "$f"; then
+              size_line=$(grep '^size ' "$f" || true)
+              size=$(echo "$size_line" | awk '{print $2}')
+              if [ -n "$size" ] && [ "$size" -ge "$threshold" ]; then
+                echo "LFS pointer >= threshold: $f (size=$size)"
+                results="${results}${f}||${size}\n"
               fi
-            done
-
-            # Commit and push back to the branch; skip CI to avoid loops
-            git commit -m "ci: auto-track large files with git-lfs [skip ci]" || echo "No changes to commit"
-            # Push back to the same branch
-            git push origin "HEAD:${branch}"
-            echo "Committed and pushed .gitattributes and LFS pointers"
+            fi
+          done < <(git ls-files -z)
+          if [ -z "$results" ]; then
+            echo "::set-output name=found::false"
           else
-            echo "No files >= ${threshold} bytes found; nothing to do."
+            # encode output (simple)
+            printf "%b" "$results" > /tmp/lfs-large-list.txt
+            echo "::set-output name=found::true"
+            echo "::set-output name=list-path::/tmp/lfs-large-list.txt"
           fi
+
+      - name: Ensure large pointers are tracked in .gitattributes and push
+        if: steps.scan.outputs.found == 'true'
+        run: |
+          set -euo pipefail
+          file=/tmp/lfs-large-list.txt
+          # Detect if this is a PR from a fork. If so, skip push (no write perms).
+          is_fork_pr=false
+          if [ -n "${{ github.event.pull_request.head.repo.full_name || '' }}" ]; then
+            if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
+              is_fork_pr=true
+            fi
+          fi
+
+          # Build list of paths
+          paths=""
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            path="${line%%||*}"
+            paths="${paths} \"$path\""
+            # Ensure git lfs track uses the literal path
+            git lfs track -- "$path" || true
+          done < "$file"
+
+          git add .gitattributes
+
+          # re-add the pointer files so the index contains the pointer (we did lfs=false)
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            path="${line%%||*}"
+            # add pointer file (we can't fetch real object now)
+            git add -- "$path" || true
+          done < "$file"
+
+          if git diff --staged --quiet; then
+            echo "No .gitattributes or index changes to commit."
+          else
+            git commit -m "ci: auto-track large LFS pointer files [skip ci]" || true
+            if [ "$is_fork_pr" = "true" ]; then
+              echo "Pull request is from a fork; skipping push (no write perms)."
+            else
+              # push back to the current branch; determine branch name
+              branch="${GITHUB_REF#refs/heads/}"
+              if [ -n "${GITHUB_HEAD_REF:-}" ]; then
+                branch="${GITHUB_HEAD_REF}"
+              fi
+              git push origin "HEAD:${branch}"
+              echo "Pushed .gitattributes update to ${branch}"
+            fi
+          fi
+
+      - name: Report nothing to do
+        if: steps.scan.outputs.found == 'false'
+        run: echo "No large LFS pointers >= ${THRESHOLD_BYTES} bytes found."
