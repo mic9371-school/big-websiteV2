@@ -22,6 +22,7 @@ jobs:
           export GIT_LFS_SKIP_SMUDGE=1
           git clone --mirror "https://github.com/${{ github.repository }}" mirror_repo
           tar -czf artifacts/mirror_backup.tar.gz -C mirror_repo .
+
       - name: Upload mirror backup
         uses: actions/upload-artifact@v3
         with:
