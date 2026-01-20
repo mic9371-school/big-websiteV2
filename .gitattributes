@@ -3,5 +3,3 @@
 mic/eag/clients/modded/modpack/explore/javascript_web/classes.js filter=lfs diff=lfs merge=lfs -text
 mic/eag/clients/modded/modpack/tech/javascript_web/classes.js filter=lfs diff=lfs merge=lfs -text
 mic/eag/clients/modded/modpack/ultimate/javascript_web/classes.js filter=lfs diff=lfs merge=lfs -text
-<file-pattern-1> !text !filter !merge !diff
-<file-pattern-2>... !text !filter !merge !diff
