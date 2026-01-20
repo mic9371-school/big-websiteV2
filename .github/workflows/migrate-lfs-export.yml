@@ -1,0 +1,91 @@
+name: Migrate LFS Export
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  migrate-lfs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (no LFS fetch)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: false
+
+      - name: Create mirror backup
+        run: |
+          mkdir -p artifacts
+          export GIT_LFS_SKIP_SMUDGE=1
+          git clone --mirror "https://github.com/${{ github.repository }}" mirror_repo
+          tar -czf artifacts/mirror_backup.tar.gz -C mirror_repo .
+      - name: Upload mirror backup
+        uses: actions/upload-artifact@v3
+        with:
+          name: mirror-backup
+          path: artifacts/mirror_backup.tar.gz
+
+      - name: Clone working copy
+        run: |
+          export GIT_LFS_SKIP_SMUDGE=1
+          git clone "https://github.com/${{ github.repository }}" working_copy
+          cd working_copy
+          sudo apt-get update
+          sudo apt-get install -y git-lfs
+          git lfs install --local
+
+      - name: Migrate LFS export (convert .js except the 3 big files)
+        run: |
+          cd working_copy
+          git lfs migrate export \
+            --include="*.js" \
+            --exclude="mic/eag/clients/modded/modpack/explore/javascript_web/classes.js,mic/eag/clients/modded/modpack/tech/javascript_web/classes.js,mic/eag/clients/modded/modpack/ultimate/javascript_web/classes.js" \
+            --everything
+
+      - name: Ensure .gitattributes lists only the three big files
+        run: |
+          cd working_copy
+          cat > .gitattributes <<'EOF'
+mic/eag/clients/modded/modpack/explore/javascript_web/classes.js filter=lfs diff=lfs merge=lfs -text
+mic/eag/clients/modded/modpack/tech/javascript_web/classes.js filter=lfs diff=lfs merge=lfs -text
+mic/eag/clients/modded/modpack/ultimate/javascript_web/classes.js filter=lfs diff=lfs merge=lfs -text
+EOF
+          git add .gitattributes
+          git commit -m "Restrict LFS to three large classes.js files" || true
+
+      - name: Renormalize working tree
+        run: |
+          cd working_copy
+          git add --renormalize .
+          git commit -m "Renormalize after LFS export" || true
+
+      - name: Verify remaining LFS-tracked .js files
+        run: |
+          cd working_copy
+          git lfs ls-files --all --long | awk '/\.js$/ {print $0}' > /tmp/lfs-js-list.txt || true
+          echo "Remaining LFS-tracked JS files:"
+          cat /tmp/lfs-js-list.txt || true
+          # ensure there are no remaining tracked .js files other than the three exclusions
+          grep -v -E 'explore/javascript_web/classes.js|tech/javascript_web/classes.js|ultimate/javascript_web/classes.js' /tmp/lfs-js-list.txt > /tmp/lfs-js-left.txt || true
+          if [ -s /tmp/lfs-js-left.txt ]; then
+            echo "ERROR: Some .js files are still tracked by LFS that should have been exported:"
+            cat /tmp/lfs-js-left.txt
+            exit 1
+          fi
+          echo "Verification OK: only the three large files remain in LFS."
+
+      - name: Force push cleaned history (DESTRUCTIVE)
+        run: |
+          cd working_copy
+          echo "Force pushing all branches and tags..."
+          git push --force --all
+          git push --force --tags
+
+      - name: Upload verification artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: lfs-verification
+          path: /tmp/lfs-js-list.txt
