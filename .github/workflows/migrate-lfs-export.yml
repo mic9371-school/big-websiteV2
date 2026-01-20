@@ -49,11 +49,11 @@ jobs:
       - name: Ensure .gitattributes lists only the three big files
         run: |
           cd working_copy
-          cat > .gitattributes <<'EOF'
-mic/eag/clients/modded/modpack/explore/javascript_web/classes.js filter=lfs diff=lfs merge=lfs -text
-mic/eag/clients/modded/modpack/tech/javascript_web/classes.js filter=lfs diff=lfs merge=lfs -text
-mic/eag/clients/modded/modpack/ultimate/javascript_web/classes.js filter=lfs diff=lfs merge=lfs -text
-EOF
+          printf '%s\n' \
+"mic/eag/clients/modded/modpack/explore/javascript_web/classes.js filter=lfs diff=lfs merge=lfs -text" \
+"mic/eag/clients/modded/modpack/tech/javascript_web/classes.js filter=lfs diff=lfs merge=lfs -text" \
+"mic/eag/clients/modded/modpack/ultimate/javascript_web/classes.js filter=lfs diff=lfs merge=lfs -text" \
+> .gitattributes
           git add .gitattributes
           git commit -m "Restrict LFS to three large classes.js files" || true
 
@@ -69,7 +69,6 @@ EOF
           git lfs ls-files --all --long | awk '/\.js$/ {print $0}' > /tmp/lfs-js-list.txt || true
           echo "Remaining LFS-tracked JS files:"
           cat /tmp/lfs-js-list.txt || true
-          # ensure there are no remaining tracked .js files other than the three exclusions
           grep -v -E 'explore/javascript_web/classes.js|tech/javascript_web/classes.js|ultimate/javascript_web/classes.js' /tmp/lfs-js-list.txt > /tmp/lfs-js-left.txt || true
           if [ -s /tmp/lfs-js-left.txt ]; then
             echo "ERROR: Some .js files are still tracked by LFS that should have been exported:"
